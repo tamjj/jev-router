@@ -206,6 +206,13 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 | --- | --- | --- |
 | `JEV_API_KEY` | Both | Enables routing. `TYPESAFE_API_KEY` also works. |
 | `JEV_ALLOW_FABLE` | Both | Enables the opt-in long tier. |
+| `JEV_UPSTREAM_URL` | Claude | Anthropic-compatible origin to forward to. Unset keeps `https://api.anthropic.com`. |
+| `JEV_HAIKU_MODEL` | Claude | Id sent for the fast tier. Unset keeps the official Haiku id. |
+| `JEV_SONNET_MODEL` | Claude | Id sent for the balanced tier. |
+| `JEV_OPUS_MODEL` | Claude | Id sent for the strong tier. |
+| `JEV_FABLE_MODEL` | Claude | Id sent for the long tier. Setting it also enables that tier. |
+| `TYPESAFE_BASE_URL` | Both | Jev API root. Unset keeps `https://api.typesafe.ai`. |
+| `TYPESAFE_DEFAULT_MODEL` | Both | Model name on the Jev request. |
 | `JEV_DEBUG` | Both | Logs decisions and rewrites to `~/.jev-claude.log` in interactive sessions. |
 | `JEV_DUMP` | Both | Dumps request bodies for debugging wire-format changes. |
 | `JEV_NO_STATUSLINE` | Claude | Disables the injected Claude status line. |

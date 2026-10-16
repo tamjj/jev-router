@@ -6,6 +6,7 @@ import {
   newTurnPrompt,
   applyTier,
   claudeModels,
+  upstreamFromEnv,
   conversationKey,
   sessionOf,
   startProxy,
@@ -21,7 +22,11 @@ test("only the sentinel model is routed", () => {
 test("the sentinel is not mistaken for a real tier", () => {
   assert.equal(tierOf("jev-router"), null);
 });
-import { tierOf, isAuto } from "../src/config.mjs";
+import { tierOf, isAuto, idOf, availableTiers } from "../src/config.mjs";
+
+for (const key of ["JEV_HAIKU_MODEL", "JEV_SONNET_MODEL", "JEV_OPUS_MODEL", "JEV_FABLE_MODEL"]) {
+  delete process.env[key];
+}
 import { writeDecision, writeStatus, readStatus, pruneStale, STATUS_DIR } from "../src/status.mjs";
 import { mkdirSync, statSync, utimesSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -92,6 +97,42 @@ test("keeps available Claude model versions as separate Jev choices", () => {
       { id: "claude-opus-4-8", tier: "opus" },
     ],
   );
+});
+
+test("custom tier ids replace that tier and leave the others on the catalog", () => {
+  const prev = {
+    JEV_HAIKU_MODEL: process.env.JEV_HAIKU_MODEL,
+    JEV_FABLE_MODEL: process.env.JEV_FABLE_MODEL,
+  };
+  process.env.JEV_HAIKU_MODEL = "model-haiku";
+  process.env.JEV_FABLE_MODEL = "model-fable";
+  try {
+    assert.equal(idOf("haiku"), "model-haiku");
+    assert.equal(idOf("sonnet"), "claude-sonnet-5");
+    assert.ok(availableTiers().includes("fable"));
+    assert.deepEqual(
+      claudeModels([
+        { id: "claude-haiku-4-5-20251001" },
+        { id: "claude-sonnet-5" },
+      ]).map(({ id }) => id),
+      ["model-haiku", "model-fable", "claude-sonnet-5"],
+    );
+  } finally {
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("JEV_UPSTREAM_URL is the forwarded origin only when set", () => {
+  const prev = process.env.JEV_UPSTREAM_URL;
+  delete process.env.JEV_UPSTREAM_URL;
+  assert.equal(upstreamFromEnv(), "https://api.anthropic.com");
+  process.env.JEV_UPSTREAM_URL = " http://127.0.0.1:23456 ";
+  assert.equal(upstreamFromEnv(), "http://127.0.0.1:23456");
+  if (prev === undefined) delete process.env.JEV_UPSTREAM_URL;
+  else process.env.JEV_UPSTREAM_URL = prev;
 });
 
 test("Claude proxy sends exact account models to Jev and routes the chosen version", async (t) => {

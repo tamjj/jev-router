@@ -19,7 +19,17 @@ export const TIER_NAMES = TIERS.map((t) => t.name);
 
 export const rankOf = (name) => TIER_NAMES.indexOf(name);
 
-export const idOf = (name) => TIERS.find((t) => t.name === name)?.id;
+const MODEL_ENV = {
+  haiku: "JEV_HAIKU_MODEL",
+  sonnet: "JEV_SONNET_MODEL",
+  opus: "JEV_OPUS_MODEL",
+  fable: "JEV_FABLE_MODEL",
+};
+
+/** Exact id to send for a tier. Unset env keeps the official Claude id. */
+export const configuredModel = (name) => process.env[MODEL_ENV[name]]?.trim() || undefined;
+
+export const idOf = (name) => configuredModel(name) || TIERS.find((t) => t.name === name)?.id;
 
 export const tierSpec = (name) => TIERS.find((t) => t.name === name);
 
@@ -43,7 +53,9 @@ export const tierOf = (model) =>
  * subscription.
  */
 export const availableTiers = () =>
-  TIER_NAMES.filter((n) => n !== "fable" || process.env.JEV_ALLOW_FABLE === "1");
+  TIER_NAMES.filter(
+    (n) => n !== "fable" || process.env.JEV_ALLOW_FABLE === "1" || configuredModel("fable"),
+  );
 
 export const THRESHOLDS = {
   /** Below this Jev confidence we refuse to downgrade and cap upgrades at `uncertainCeiling`. */

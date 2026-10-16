@@ -6,11 +6,32 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startProxy } from "../src/proxy.mjs";
 import { AUTO_MODEL } from "../src/config.mjs";
-import { readSavedModel, restoreSavedModel } from "../src/settings.mjs";
+import { readSavedModel, restoreSavedModel, withRouterModel } from "../src/settings.mjs";
 import { LOG_FILE } from "../src/log.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
+
+/**
+ * Claude Code's UI shows the model it asked for, never the one the proxy routed to, so a
+ * status line is the only way to surface the decision. A status line the user configured
+ * themselves still wins: theirs is a deliberate choice and silently overwriting it would be
+ * worse than showing nothing.
+ */
+function statusLineField(settings) {
+  if (process.env.JEV_NO_STATUSLINE || settings.statusLine) return {};
+  for (const dir of [join(process.cwd(), ".claude"), join(homedir(), ".claude")]) {
+    try {
+      if (JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).statusLine) return {};
+    } catch {
+      // No settings file, or unreadable; nothing to preserve.
+    }
+  }
+  // A command string rather than inline JSON: on Windows the args go through a shell, and a
+  // JSON string containing its own quotes does not survive that.
+  const command = `"${process.execPath}" "${join(HERE, "jev-statusline.mjs")}"`;
+  return { statusLine: { type: "command", command } };
+}
 
 /**
  * Registers "Jev Router" as an extra row in Claude Code's /model picker and starts the session
@@ -43,31 +64,31 @@ function autoModelEnv() {
 const savedModelBefore = readSavedModel();
 
 /**
- * Claude Code's UI shows the model it asked for, never the one the proxy routed to, so a
- * status line is the only way to surface the decision. `--settings` merges rather than
- * replaces, but a status line the user configured themselves still takes priority: theirs
- * is a deliberate choice and silently overwriting it would be worse than showing nothing.
+ * A profile's ANTHROPIC_MODEL is applied on top of the process environment and beats `--model`,
+ * so the copy this session launches with has to name the router. The status line rides in that
+ * same file: it was previously a second `--settings`, which puts the pin and the status line in
+ * two different files and leaves which one survives up to how the CLI resolves a repeated flag.
  */
-function statusLineArgs() {
-  if (process.env.JEV_NO_STATUSLINE) return [];
-  for (const dir of [join(process.cwd(), ".claude"), join(homedir(), ".claude")]) {
+function launchSettings(args) {
+  const index = args.indexOf("--settings");
+  const path = index === -1 ? undefined : args[index + 1];
+  let settings = {};
+  if (path) {
     try {
-      if (JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).statusLine) return [];
+      settings = JSON.parse(readFileSync(path, "utf8"));
     } catch {
-      // No settings file, or unreadable; nothing to preserve.
+      return args;
     }
   }
-  // Passed as a file rather than inline JSON: on Windows the args go through a shell, and a
-  // JSON string containing its own quotes does not survive that.
-  const command = `"${process.execPath}" "${join(HERE, "jev-statusline.mjs")}"`;
-  const file = join(tmpdir(), "jev-claude", "settings.json");
+  const merged = { ...withRouterModel(settings), ...statusLineField(settings) };
+  const file = join(tmpdir(), "jev-claude", "launched-settings.json");
   try {
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify({ statusLine: { type: "command", command } }));
+    writeFileSync(file, JSON.stringify(merged));
   } catch {
-    return [];
+    return args;
   }
-  return ["--settings", file];
+  return index === -1 ? [...args, "--settings", file] : args.with(index + 1, file);
 }
 
 // Existing environment variables win, followed by project-local, shared user-level, then
@@ -131,7 +152,7 @@ if (process.env.JEV_API_KEY || process.env.TYPESAFE_API_KEY) {
     close();
     restoreSavedModel(savedModelBefore);
   });
-  args.push(...statusLineArgs());
+  args.splice(0, args.length, ...launchSettings(args));
   if (process.env.JEV_DEBUG && process.stdout.isTTY) {
     process.stderr.write(`[jev] routing decisions -> ${LOG_FILE}\n`);
   }
@@ -142,8 +163,12 @@ if (process.env.JEV_API_KEY || process.env.TYPESAFE_API_KEY) {
   );
 }
 
-// On Windows a `.cmd` shim still needs a shell; a real executable does not.
-const child = spawn(claude.file, claude.shell ? args.map((a) => (/\s/.test(a) ? `"${a}"` : a)) : args, {
+// On Windows a `.cmd` shim still needs a shell; a real executable does not. With a shell, Node
+// joins the file and args into one cmd.exe string and escapes nothing, so the file has to be
+// quoted here too - otherwise a path like "C:\Program Files\nodejs\claude.CMD" makes cmd read
+// "C:\Program" as the command name.
+const quote = (arg) => (/\s/.test(arg) ? `"${arg}"` : arg);
+const child = spawn(claude.shell ? quote(claude.file) : claude.file, claude.shell ? args.map(quote) : args, {
   stdio: "inherit",
   shell: claude.shell,
   env,

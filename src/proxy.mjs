@@ -6,9 +6,11 @@ import {
   TIERS,
   tierOf,
   idOf,
+  configuredModel,
   availableTiers,
   tierSpec,
   isAuto,
+  AUTO_MODEL,
   shouldUseExactModel,
 } from "./config.mjs";
 import { askJev } from "./router.mjs";
@@ -17,6 +19,9 @@ import { log } from "./log.mjs";
 import { writeDecision, writeStatus } from "./status.mjs";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+
+/** Custom Anthropic-compatible origin, such as cc-router. Unset keeps api.anthropic.com. */
+export const upstreamFromEnv = () => process.env.JEV_UPSTREAM_URL?.trim() || ANTHROPIC_BASE_URL;
 const debug = (line) => process.env.JEV_DEBUG && log(line);
 
 /**
@@ -99,20 +104,28 @@ export function applyTier(body, tierName, model = idOf(tierName)) {
 
 /** Exact Claude models reported by the account, newest first; static ids are the cold-start fallback. */
 export function claudeModels(catalog = []) {
-  const models = catalog
-    .filter((model) => tierOf(model?.id))
-    .map((model) => ({
-      id: model.id,
-      tier: tierOf(model.id),
-      description: [
-        model.display_name,
-        model.created_at && `released ${model.created_at.slice(0, 10)}`,
-        model.max_input_tokens && `${model.max_input_tokens} input tokens`,
-      ].filter(Boolean).join("; "),
-    }));
+  const pinned = TIERS.flatMap((tier) => {
+    const id = configuredModel(tier.name);
+    return id ? [{ id, tier: tier.name, description: id }] : [];
+  });
+  const pinnedTiers = new Set(pinned.map((model) => model.tier));
+  const models = [
+    ...pinned,
+    ...catalog
+      .filter((model) => tierOf(model?.id) && !pinnedTiers.has(tierOf(model.id)))
+      .map((model) => ({
+        id: model.id,
+        tier: tierOf(model.id),
+        description: [
+          model.display_name,
+          model.created_at && `released ${model.created_at.slice(0, 10)}`,
+          model.max_input_tokens && `${model.max_input_tokens} input tokens`,
+        ].filter(Boolean).join("; "),
+      })),
+  ];
   return models.length
     ? models
-    : TIERS.map((tier) => ({ id: tier.id, tier: tier.name, description: tier.id }));
+    : TIERS.map((tier) => ({ id: idOf(tier.name), tier: tier.name, description: idOf(tier.name) }));
 }
 
 const modelForTier = (models, tier) => models.find((model) => model.tier === tier)?.id ?? idOf(tier);
@@ -167,7 +180,7 @@ export function observeModel(state, current) {
 }
 
 
-export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = askJev } = {}) {
+export async function startProxy({ upstreamURL = upstreamFromEnv(), route = askJev } = {}) {
   // Tier routed for each conversation's turn in flight, reused by its follow-up requests and
   // by the cache-rebuild guard, which needs to know what the prompt cache was built on.
   const convos = new Map();
@@ -301,10 +314,21 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
             const chunks = [];
             up.on("data", (chunk) => chunks.push(chunk));
             up.on("end", () => {
-              const data = Buffer.concat(chunks);
+              const raw = Buffer.concat(chunks);
+              let listed = raw;
               try {
-                for (const model of JSON.parse(data.toString()).data ?? []) {
-                  if (tierOf(model?.id)) catalog.set(model.id, model);
+                const body = JSON.parse(raw.toString());
+                const models = Array.isArray(body?.data) ? body.data : null;
+                if (models) {
+                  for (const model of models) {
+                    if (tierOf(model?.id)) catalog.set(model.id, model);
+                  }
+                  // Not in this list, Claude's allowlist drops the id and the profile's
+                  // ANTHROPIC_MODEL (model-fable) wins over `--model jev-router`.
+                  if (!models.some((model) => model?.id === AUTO_MODEL)) {
+                    models.push({ id: AUTO_MODEL, display_name: "Jev Router", type: "model" });
+                  }
+                  listed = Buffer.from(JSON.stringify({ ...body, data: models }));
                 }
               } catch (err) {
                 debug(`could not read Claude model catalog: ${err.message}`);
@@ -312,7 +336,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
               const headers = { ...up.headers };
               delete headers["content-length"];
               res.writeHead(up.statusCode, headers);
-              res.end(data);
+              res.end(listed);
             });
             return;
           }

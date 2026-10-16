@@ -105,9 +105,12 @@ export async function runCodex() {
   }
 
   const childArgs = [...command.prefix, ...args];
+  // Same Windows hazard as jev-claude: with a shell, Node joins the file and args into one cmd.exe
+  // string and escapes neither, so a path like "C:\Program Files\..." must be quoted here too.
+  const quote = (arg) => (/\s/.test(arg) ? `"${arg}"` : arg);
   const child = spawn(
-    command.file,
-    command.shell ? childArgs.map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg)) : childArgs,
+    command.shell ? quote(command.file) : command.file,
+    command.shell ? childArgs.map(quote) : childArgs,
     { stdio: "inherit", shell: command.shell, env: process.env },
   );
   child.on("error", (err) => {

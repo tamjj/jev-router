@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readSavedModel, restoreSavedModel } from "../src/settings.mjs";
+import { readSavedModel, restoreSavedModel, withRouterModel } from "../src/settings.mjs";
 
 const fileWith = (settings) => {
   const file = join(mkdtempSync(join(tmpdir(), "jev-settings-")), "settings.json");
@@ -11,6 +11,35 @@ const fileWith = (settings) => {
   return file;
 };
 const modelIn = (file) => JSON.parse(readFileSync(file, "utf8")).model;
+
+test("a launched profile names the router without dropping the rest of its env", () => {
+  assert.deepEqual(
+    withRouterModel({ env: { ANTHROPIC_MODEL: "model-fable", ANTHROPIC_AUTH_TOKEN: "secret" } }),
+    { env: { ANTHROPIC_MODEL: "jev-router", ANTHROPIC_AUTH_TOKEN: "secret" } },
+  );
+});
+
+test("a launched profile cannot point the session away from the proxy", () => {
+  assert.deepEqual(
+    withRouterModel({
+      env: {
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:23456",
+        ANTHROPIC_AUTH_TOKEN: "secret",
+        ANTHROPIC_MODEL: "model-fable",
+      },
+    }),
+    { env: { ANTHROPIC_AUTH_TOKEN: "secret", ANTHROPIC_MODEL: "jev-router" } },
+  );
+});
+
+test("a launched profile routes subagents instead of pinning them", () => {
+  assert.deepEqual(
+    withRouterModel({
+      env: { CLAUDE_CODE_SUBAGENT_MODEL: "model-opus", ANTHROPIC_AUTH_TOKEN: "secret" },
+    }),
+    { env: { ANTHROPIC_AUTH_TOKEN: "secret", ANTHROPIC_MODEL: "jev-router" } },
+  );
+});
 
 test("reads the saved model, ignoring a leftover sentinel", () => {
   assert.equal(readSavedModel(fileWith({ model: "opus" })), "opus");
