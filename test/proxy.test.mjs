@@ -306,6 +306,28 @@ test("a prompt that is only a system reminder is not a turn", () => {
   assert.equal(newTurnPrompt(body), null);
 });
 
+test("a harness token-budget reminder after the user turn does not hide the turn", () => {
+  const body = withTools([
+    { role: "user", content: "fix the bug" },
+    { role: "assistant", content: [{ type: "text", text: "ok" }] },
+    { role: "user", content: "now rename it" },
+    { role: "system", content: "<total_tokens>14985757 tokens left</total_tokens>" },
+  ]);
+  assert.equal(newTurnPrompt(body), "now rename it");
+});
+
+test("a trailing system reminder does not turn a tool_result continuation into a new turn", () => {
+  const body = withTools([
+    { role: "user", content: "fix the bug" },
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "t1", content: "done" }],
+    },
+    { role: "system", content: "<total_tokens>14985757 tokens left</total_tokens>" },
+  ]);
+  assert.equal(newTurnPrompt(body), null);
+});
+
 test("routing to haiku strips fields haiku cannot accept", () => {
   const body = {
     model: "claude-sonnet-4-6",
