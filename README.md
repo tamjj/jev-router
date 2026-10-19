@@ -141,13 +141,15 @@ may also remove them during normal temporary-file cleanup.
 ![Jev Router in the OpenAI Codex model picker](docs/codex-model-picker.png)
 
 `jev-codex` launches Codex with a temporary **Jev Router** provider and selects `jev-router`.
-The native `/model` picker still contains the models available to the account. Selecting a
-concrete model pauses routing; selecting **Jev Router** resumes it.
+The native `/model` picker lists **Jev Router** (routes every turn), one row per tier
+(**Jev Fast/Balanced/Strong/Long**, which send `model-haiku`/`model-sonnet`/`model-opus`/
+`model-fable` as a fixed choice), and the concrete account models. Selecting a concrete or
+Jev-tier model pauses routing until **Jev Router** is selected again.
 
 Each fresh decision appears as Codex commentary:
 
 ```text
-[Jev] routed this turn to gpt-5.6-sol (jev, confidence 0.91).
+[Jev] routed this turn to gpt-6.1-sol (jev, confidence 0.91).
 ```
 
 `jev-codex` installs or refreshes the packaged `$jev-explain` skill when it starts, so it is
@@ -183,10 +185,10 @@ One Jev call per fresh user turn selects a shared abstract tier:
 
 | Tier | Claude Code default | Codex default |
 | --- | --- | --- |
-| Fast | Haiku | `gpt-5.6-luna` |
-| Balanced | Sonnet | `gpt-5.6-terra` |
-| Strong | Opus | `gpt-5.6-sol` |
-| Long | Fable | `gpt-6-astra` |
+| Fast | Haiku | `gpt-6.1-luna` |
+| Balanced | Sonnet | `gpt-6.1-terra` |
+| Strong | Opus | `gpt-6.1-sol` |
+| Long | Fable | `gpt-6.1-astra` |
 
 `src/policy.mjs` then applies these rules:
 
@@ -216,10 +218,11 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 | `JEV_DEBUG` | Both | Logs decisions and rewrites to `~/.jev-claude.log` in interactive sessions. |
 | `JEV_DUMP` | Both | Dumps request bodies for debugging wire-format changes. |
 | `JEV_NO_STATUSLINE` | Claude | Disables the injected Claude status line. |
-| `JEV_CODEX_FAST_MODEL` | Codex | Fast model; defaults to `gpt-5.6-luna`. |
-| `JEV_CODEX_BALANCED_MODEL` | Codex | Balanced model; defaults to `gpt-5.6-terra`. |
-| `JEV_CODEX_STRONG_MODEL` | Codex | Strong model; defaults to `gpt-5.6-sol`. |
-| `JEV_CODEX_LONG_MODEL` | Codex | Long model; defaults to `gpt-6-astra`. |
+| `JEV_CODEX_FAST_MODEL` | Codex | Fast model; defaults to `gpt-6.1-luna`. |
+| `JEV_CODEX_BALANCED_MODEL` | Codex | Balanced model; defaults to `gpt-6.1-terra`. |
+| `JEV_CODEX_STRONG_MODEL` | Codex | Strong model; defaults to `gpt-6.1-sol`. |
+| `JEV_CODEX_LONG_MODEL` | Codex | Long model; defaults to `gpt-6.1-astra`. |
+| `JEV_CODEX_UPSTREAM_URL` | Codex | OpenAI-compatible origin (include `/v1`) to forward every request to. Unset keeps the ChatGPT/OpenAI routing. |
 
 Existing environment variables have highest precedence, followed by `.env` in the launch
 directory, `~/.jev-router.env`, and the legacy `~/.jev-claude.env`.
@@ -277,7 +280,7 @@ For a pull request:
 2. Fork the repository and create a focused branch from `master`.
 3. Make the smallest change that solves the problem.
 4. Run `npm test` and include tests for non-trivial behavior changes.
-5. Claude/Copilot/Codex shall not be the contributors. 
+5. Claude/Copilot/Codex shall not be the contributors.
 
 Please do not commit API keys or other secrets. All contributions require review, and only the
 repository owner can merge pull requests.

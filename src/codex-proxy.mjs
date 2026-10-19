@@ -12,11 +12,14 @@ const CHATGPT_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const API_BASE_URL = "https://api.openai.com/v1";
 export const CODEX_AUTO_MODEL = "jev-router";
 const DEFAULT_MODELS = {
-  haiku: "gpt-5.6-luna",
-  sonnet: "gpt-5.6-terra",
-  opus: "gpt-5.6-sol",
-  fable: "gpt-6-astra",
+  haiku: "gpt-6.1-luna",
+  sonnet: "gpt-6.1-terra",
+  opus: "gpt-6.1-sol",
+  fable: "gpt-6.1-astra",
 };
+/** Per-tier picker rows that forward to one exact model, so only one OpenAI model id is configured. */
+const TIER_ALIASES = { haiku: "model-haiku", sonnet: "model-sonnet", opus: "model-opus", fable: "model-fable" };
+const TIER_LABELS = { haiku: "Fast", sonnet: "Balanced", opus: "Strong", fable: "Long" };
 const MODEL_ENV = {
   haiku: "JEV_CODEX_FAST_MODEL",
   sonnet: "JEV_CODEX_BALANCED_MODEL",
@@ -27,6 +30,8 @@ const MODEL_ENV = {
 export const codexModelOf = (tier) => process.env[MODEL_ENV[tier]] ?? DEFAULT_MODELS[tier];
 
 export function codexTierOf(model) {
+  const alias = Object.keys(TIER_ALIASES).find((tier) => TIER_ALIASES[tier] === model);
+  if (alias) return alias;
   const configured = Object.keys(DEFAULT_MODELS).find((tier) => codexModelOf(tier) === model);
   if (configured) return configured;
   if (/(?:astra|fable|long)/i.test(model ?? "")) return "fable";
@@ -38,7 +43,12 @@ export function codexTierOf(model) {
 /** Exact GPT models in Codex's account catalog; configured ids are the cold-start fallback. */
 export function codexModels(models = new Map()) {
   const available = [...models.values()]
-    .filter((model) => model.slug !== CODEX_AUTO_MODEL && model.supported_in_api !== false)
+    .filter(
+      (model) =>
+        model.slug !== CODEX_AUTO_MODEL &&
+        !isPickerAlias(model.slug) &&
+        model.supported_in_api !== false,
+    )
     .map((model) => ({
       id: model.slug,
       tier: codexTierOf(model.slug),
@@ -83,7 +93,11 @@ export const isCodexAuxiliaryPrompt = (prompt) =>
 /** User text that starts a new Codex turn, or null for tool continuations. */
 export function codexNewTurnPrompt(body) {
   if (!Array.isArray(body?.input)) return null;
-  if (!body.input.some((item) => item?.type === "additional_tools")) return null;
+  // Codex moved the tool list to a top-level `tools` array; older versions sent an
+  // `additional_tools` item inside `input`. Either one marks a real request rather than
+  // some other client, so both are accepted.
+  const hasTools = body?.tools?.length > 0 || body.input.some((item) => item?.type === "additional_tools");
+  if (!hasTools) return null;
   for (const item of [...body.input].reverse()) {
     if (item?.type === "function_call_output" || item?.type === "custom_tool_call_output") return null;
     if (item?.role !== "user") continue;
@@ -101,30 +115,71 @@ export function codexConversationKey(body) {
   return createHash("sha1").update(String(stable)).digest("hex").slice(0, 12);
 }
 
-export function addJevModel(catalog) {
-  if (!Array.isArray(catalog?.models) || catalog.models.some((model) => model.slug === CODEX_AUTO_MODEL)) {
-    return catalog;
-  }
+/** Whether a picker row forwards to one exact model, or the router still chooses per turn. */
+export const isPickerAlias = (slug) => Object.values(TIER_ALIASES).includes(slug);
+
+const aliasRow = (template, tier) => ({
+  ...template,
+  slug: TIER_ALIASES[tier],
+  display_name: `Jev ${TIER_LABELS[tier]}`,
+  description: `Jev routes this to ${codexModelOf(tier)}.`,
+  visibility: "list",
+  supported_in_api: true,
+  upgrade: null,
+});
+
+const withModel = (body, model) => (body.model === model ? body : { ...body, model });
+
+/** Codex /model can send the picker row index instead of the slug; only map indexes the catalog lists. */
+export function pickerModel(body, picker = new Map()) {
+  if (typeof body?.model !== "string" || !/^\d+$/.test(body.model)) return body;
+  return picker.has(Number(body.model)) ? withModel(body, picker.get(Number(body.model))) : body;
+}
+
+/** Codex expects `models`; OpenAI-compatible gateways answer `/models` with `data`. */
+export const asCatalog = (catalog) =>
+  Array.isArray(catalog?.models) || !Array.isArray(catalog?.data)
+    ? catalog
+    : {
+        ...catalog,
+        models: catalog.data.map((model) => ({
+          ...model,
+          slug: model.id ?? model.slug,
+          display_name: model.display_name ?? model.id,
+        })),
+      };
+
+export function addJevModel(input) {
+  const catalog = asCatalog(input);
+  if (!Array.isArray(catalog?.models)) return catalog;
+  const fresh = (slug) => !catalog.models.some((model) => model.slug === slug);
   const template =
     catalog.models.find((model) => model.slug === codexModelOf("sonnet")) ??
     catalog.models.find((model) => model.visibility === "list") ??
     catalog.models[0];
   if (!template) return catalog;
-  catalog.models.unshift({
-    ...template,
-    slug: CODEX_AUTO_MODEL,
-    display_name: "Jev Router",
-    description: "Jev picks the cheapest model that can complete each turn.",
-    visibility: "list",
-    supported_in_api: true,
-    priority: 0,
-    upgrade: null,
+  if (fresh(CODEX_AUTO_MODEL)) {
+    catalog.models.unshift({
+      ...template,
+      slug: CODEX_AUTO_MODEL,
+      display_name: "Jev Router",
+      description: "Jev picks the cheapest model that can complete each turn.",
+      visibility: "list",
+      supported_in_api: true,
+      priority: 0,
+      upgrade: null,
+    });
+  }
+  Object.keys(TIER_ALIASES).forEach((tier, i) => {
+    if (fresh(TIER_ALIASES[tier])) {
+      catalog.models.push({ ...aliasRow(template, tier), priority: catalog.models.length + i + 1 });
+    }
   });
   return catalog;
 }
 
 export function applyCodexTier(body, tier, models = new Map(), model = codexModelOf(tier)) {
-  body.model = model;
+  Object.assign(body, withModel(body, model));
   const info = models.get(model);
   const efforts = info?.supported_reasoning_levels?.map((level) => level.effort);
   if (body.reasoning?.effort && efforts?.length && !efforts.includes(body.reasoning.effort)) {
@@ -138,7 +193,10 @@ export const upstreamFor = (
   path = "",
   chatgptBaseURL = CHATGPT_BASE_URL,
   apiBaseURL = API_BASE_URL,
-) => /\/models(?:\?|$)/.test(path) || headers["chatgpt-account-id"] ? chatgptBaseURL : apiBaseURL;
+  upstreamURL = "",
+) =>
+  upstreamURL ||
+  (/\/models(?:\?|$)/.test(path) || headers["chatgpt-account-id"] ? chatgptBaseURL : apiBaseURL);
 
 export function jevDecisionEvents({ tier, model = codexModelOf(tier), confidence, reason }) {
   const detail = confidence == null ? reason : `${reason}, confidence ${confidence.toFixed(2)}`;
@@ -165,13 +223,29 @@ const debug = (line) => process.env.JEV_DEBUG && log(line);
 const upstreamPath = (base, path) => `${new URL(base).pathname.replace(/\/$/, "")}${path}`;
 
 export async function startCodexProxy({
-  chatgptBaseURL = CHATGPT_BASE_URL,
-  apiBaseURL = API_BASE_URL,
+  chatgptBaseURL,
+  apiBaseURL,
+  upstreamURL,
   route = askJev,
   statusId = "",
 } = {}) {
+  // Explicit arguments beat the environment, and the environment beats the built-in defaults.
+  // A launcher (`jev-codex`) passes nothing and gets JEV_CODEX_UPSTREAM_URL; a test that
+  // passes its own fake upstream must not be redirected to whatever this machine has set.
+  const configuredUpstream =
+    upstreamURL ??
+    (chatgptBaseURL || apiBaseURL ? "" : process.env.JEV_CODEX_UPSTREAM_URL?.trim() || "");
+  chatgptBaseURL ??= CHATGPT_BASE_URL;
+  apiBaseURL ??= API_BASE_URL;
   const states = new Map();
   const models = new Map();
+  const picker = new Map();
+  // Node 19+ keeps globalAgent connections alive, so an idle socket to the upstream can hold
+  // the event loop open after Codex exits. Own the agents so close() can tear them down.
+  const agents = {
+    "http:": new http.Agent({ keepAlive: true }),
+    "https:": new https.Agent({ keepAlive: true }),
+  };
 
   const server = http.createServer((req, res) => {
     const chunks = [];
@@ -181,11 +255,14 @@ export async function startCodexProxy({
       let routing;
       if (req.method === "POST" && /\/responses(?:\?|$)/.test(req.url ?? "")) {
         try {
-          const body = JSON.parse(out.toString());
+          const rawBody = JSON.parse(out.toString());
+          const body = pickerModel(rawBody, picker);
           if (process.env.JEV_DUMP) {
             writeFileSync(`${process.env.JEV_DUMP}.${Date.now()}.json`, JSON.stringify(body, null, 2));
           }
-          if (body.model === CODEX_AUTO_MODEL) {
+          const routed = body.model === CODEX_AUTO_MODEL || isPickerAlias(body.model);
+          const requestedTier = codexTierOf(body.model);
+          if (routed) {
             const key = codexConversationKey(body);
             const candidates = codexModels(models).filter((model) =>
               availableTiers().includes(model.tier),
@@ -195,9 +272,13 @@ export async function startCodexProxy({
             const current = codexTierOf(currentModel) ?? "opus";
             const prompt = codexNewTurnPrompt(body);
             const explaining = prompt?.includes("<jev-explain>") || /^\$jev-explain\b/i.test(prompt ?? "");
-            let tier = current;
-            let model = currentModel;
-            if (prompt && !explaining) {
+            const pinned = isPickerAlias(body.model);
+            let tier = pinned ? requestedTier : current;
+            let model = pinned ? modelForTier(candidates, requestedTier) : currentModel;
+            if (pinned) {
+              // A Jev Fast/Balanced/Strong/Long row is the user's own pick: no Jev call, no downgrade.
+              if (prompt && !explaining) writeStatus(statusId, { manual: true, at: Date.now() });
+            } else if (prompt && !explaining) {
               const contextTokens = Math.round(JSON.stringify(body.input).length / 4);
               const jev = await route({ prompt, current: currentModel, contextTokens, models: candidates });
               const chosen = candidates.find((candidate) => candidate.id === jev?.choice);
@@ -241,7 +322,7 @@ export async function startCodexProxy({
         }
       }
 
-      const base = upstreamFor(req.headers, req.url, chatgptBaseURL, apiBaseURL);
+      const base = upstreamFor(req.headers, req.url, chatgptBaseURL, apiBaseURL, configuredUpstream);
       const target = new URL(base);
       const transport = target.protocol === "http:" ? http : https;
       const headers = { ...req.headers, host: target.host };
@@ -253,6 +334,7 @@ export async function startCodexProxy({
           path: upstreamPath(base, req.url ?? "/"),
           method: req.method,
           headers,
+          agent: agents[target.protocol],
         },
         (response) => {
           const responseHeaders = { ...response.headers };
@@ -264,7 +346,10 @@ export async function startCodexProxy({
               let data = Buffer.concat(body);
               try {
                 const catalog = addJevModel(JSON.parse(data.toString()));
-                for (const model of catalog.models) models.set(model.slug, model);
+                catalog.models.forEach((model, index) => {
+                  models.set(model.slug, model);
+                  picker.set(index, model.slug);
+                });
                 data = Buffer.from(JSON.stringify(catalog));
                 delete responseHeaders["content-length"];
               } catch (err) {
@@ -319,5 +404,13 @@ export async function startCodexProxy({
   });
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { port: server.address().port, close: () => server.close() };
+  const close = () => {
+    // Destroy pooled upstream sockets too; otherwise an idle keep-alive connection keeps the
+    // event loop alive and `jev-codex` never exits after Codex does.
+    agents["http:"].destroy();
+    agents["https:"].destroy();
+    server.close();
+    server.closeAllConnections?.();
+  };
+  return { port: server.address().port, close };
 }
